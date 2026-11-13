@@ -91,6 +91,7 @@ local order = {
         "network_info",
         "network_before_wifi_action",
         "network_after_wifi_action",
+        "network_settle_delay",
         "network_dismiss_scan",
         "----------------------------",
         "ssh",

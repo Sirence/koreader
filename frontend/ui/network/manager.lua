@@ -13,6 +13,7 @@ local logger = require("logger")
 local time = require("ui/time")
 local util = require("util")
 local _ = require("gettext")
+local C_ = _.pgettext
 local C = ffi.C
 local T = ffiutil.template
 
@@ -1115,6 +1116,39 @@ function NetworkMgr:getMenuTable(common_settings)
         common_settings.network_before_wifi_action = self:getBeforeWifiActionMenuTable()
         common_settings.network_after_wifi_action = self:getAfterWifiActionMenuTable()
     end
+    if Device:isAndroid() and Device:hasSeamlessWifiToggle() then
+        common_settings.network_settle_delay = self:getSettleDelayMenuTable()
+    end
+end
+
+function NetworkMgr:getSettleDelayMenuTable()
+    local function delay()
+        return G_reader_settings:readSetting("android_wifi_settle_delay", 5)
+    end
+    return {
+        text_func = function()
+            return T(_("Wait after Wi-Fi connects: %1 s"), delay())
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            local SpinWidget = require("ui/widget/spinwidget")
+            UIManager:show(SpinWidget:new{
+                value = delay(),
+                value_min = 0,
+                value_max = 60,
+                value_step = 1,
+                value_hold_step = 5,
+                default_value = 5,
+                unit = C_("Time", "s"),
+                title_text = _("Wait after Wi-Fi connects"),
+                info_text = _("After KOReader turns on Wi-Fi, wait this long once connected before using the network."),
+                callback = function(spin)
+                    G_reader_settings:saveSetting("android_wifi_settle_delay", spin.value)
+                    touchmenu_instance:updateItems()
+                end,
+            })
+        end,
+    }
 end
 
 function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback, interactive)

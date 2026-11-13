@@ -8,6 +8,7 @@ local C = ffi.C
 local FFIUtil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local time = require("ui/time")
 local util = require("util")
 local _ = require("gettext")
 local T = FFIUtil.template
@@ -332,6 +333,10 @@ function Device:initNetworkManager(NetworkMgr)
 
     function NetworkMgr:turnOnWifi(complete_callback)
         if can_toggle_wifi then
+            -- Some devices crash if the network is used right after Wi-Fi comes up,
+            -- so isConnected() waits for the connection to settle (see below).
+            self._wifi_settling = true
+            self._wifi_up_since = nil
             if not android.setWifiEnabled(true) then
                 logger.warn("Android: failed to enable Wi-Fi")
                 return false
@@ -347,6 +352,8 @@ function Device:initNetworkManager(NetworkMgr)
     end
     function NetworkMgr:turnOffWifi(complete_callback)
         if can_toggle_wifi then
+            self._wifi_settling = nil
+            self._wifi_up_since = nil
             if not android.setWifiEnabled(false) then
                 logger.warn("Android: failed to disable Wi-Fi")
             end
@@ -362,11 +369,35 @@ function Device:initNetworkManager(NetworkMgr)
         android.openWifiSettings()
     end
 
-    function NetworkMgr:isConnected()
+    local function isNetworkUp()
         local ok = android.getNetworkInfo()
         ok = tonumber(ok)
         if not ok then return false end
         return ok == 1
+    end
+
+    function NetworkMgr:isConnected()
+        local connected = isNetworkUp()
+        -- Only delay connections *we* just brought up via turnOnWifi.
+        if not self._wifi_settling then
+            return connected
+        end
+        local delay = G_reader_settings:readSetting("android_wifi_settle_delay", 5)
+        if not connected then
+            self._wifi_up_since = nil
+            return false
+        end
+        local now = time.now()
+        if not self._wifi_up_since then
+            self._wifi_up_since = now
+            logger.info("Android: Wi-Fi connected, waiting", delay, "s before using it")
+        end
+        if time.to_s(now - self._wifi_up_since) < delay then
+            return false
+        end
+        self._wifi_settling = nil
+        self._wifi_up_since = nil
+        return true
     end
     if can_toggle_wifi then
         function NetworkMgr:isWifiOn()
