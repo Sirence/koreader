@@ -886,7 +886,12 @@ end
 
 
 function NetworkMgr:getWifiMenuTable()
-    if Device:isAndroid() then
+    if Device:isAndroid() and Device:hasSeamlessWifiToggle() then
+        -- Direct toggle on tap, long-press opens the system settings (e.g., to pick a network).
+        local t = self:getWifiToggleMenuTable()
+        t.hold_callback = function() self:openSettings() end
+        return t
+    elseif Device:isAndroid() then
         return {
             text = _("Wi-Fi settings"),
             callback = function() self:openSettings() end,

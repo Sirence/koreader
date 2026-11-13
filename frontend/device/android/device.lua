@@ -77,7 +77,9 @@ local Device = Generic:extend{
     model = android.prop.product,
     hasKeys = yes,
     hasDPad = no,
-    hasSeamlessWifiToggle = no, -- Requires losing focus to the sytem's network settings and user interaction
+    -- Android <= 9 lets regular apps toggle the Wi-Fi radio directly (WifiManager.setWifiEnabled).
+    -- Newer versions require losing focus to the system's network settings and user interaction.
+    hasSeamlessWifiToggle = android.canToggleWifi() and yes or no,
     hasExitOptions = no,
     hasEinkScreen = function() return android.isEink() end,
     hasColorScreen = android.isColorScreen() and yes or no,
@@ -314,14 +316,32 @@ function Device:UIManagerReady(uimgr)
 end
 
 function Device:initNetworkManager(NetworkMgr)
+    local can_toggle_wifi = self:hasSeamlessWifiToggle()
+    logger.info("Android: direct Wi-Fi toggle", can_toggle_wifi and "available" or "unavailable")
+
     function NetworkMgr:turnOnWifi(complete_callback)
-        android.openWifiSettings()
+        if can_toggle_wifi then
+            if not android.setWifiEnabled(true) then
+                logger.warn("Android: failed to enable Wi-Fi")
+                return false
+            end
+            -- The system reconnects to a known network on its own;
+            -- complete_callback schedules the connectivity check.
+        else
+            android.openWifiSettings()
+        end
         if complete_callback then
             complete_callback()
         end
     end
     function NetworkMgr:turnOffWifi(complete_callback)
-        android.openWifiSettings()
+        if can_toggle_wifi then
+            if not android.setWifiEnabled(false) then
+                logger.warn("Android: failed to disable Wi-Fi")
+            end
+        else
+            android.openWifiSettings()
+        end
         if complete_callback then
             complete_callback()
         end
@@ -337,7 +357,13 @@ function Device:initNetworkManager(NetworkMgr)
         if not ok then return false end
         return ok == 1
     end
-    NetworkMgr.isWifiOn = NetworkMgr.isConnected
+    if can_toggle_wifi then
+        function NetworkMgr:isWifiOn()
+            return android.isWifiEnabled()
+        end
+    else
+        NetworkMgr.isWifiOn = NetworkMgr.isConnected
+    end
 end
 
 function Device:performHapticFeedback(type)
