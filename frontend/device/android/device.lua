@@ -91,7 +91,7 @@ local Device = Generic:extend{
     home_dir = android.getExternalStoragePath(),
     display_dpi = android.lib.AConfiguration_getDensity(android.app.config),
     isHapticFeedbackEnabled = yes,
-    isDefaultFullscreen = function() return android.app.activity.sdkVersion >= 19 end,
+    isDefaultFullscreen = function() return android.app.activity.sdkVersion >= 19 and android.isFullscreen() end,
     hasClipboard = yes,
     hasOTAUpdates = android.ota.isEnabled,
     hasOTARunning = function() return android.ota.isRunning end,
@@ -163,17 +163,16 @@ function Device:init()
                 -- orientation and size changes
                 if android.screen.width ~= android.getScreenWidth()
                 or android.screen.height ~= android.getScreenHeight() then
+                    -- resize() reallocates the buffer, so drop any windowed-mode viewport first
+                    this.device:_dropViewport()
                     this.device.screen:resize()
-                    local new_size = this.device.screen:getSize()
-                    logger.info("Resizing screen to", new_size)
-                    local FileManager = require("apps/filemanager/filemanager")
-                    UIManager:broadcastEvent(Event:new("SetDimensions", new_size))
-                    UIManager:broadcastEvent(Event:new("ScreenResize", new_size))
-                    UIManager:broadcastEvent(Event:new("RedrawCurrentPage"))
-                    if FileManager.instance then
-                        FileManager.instance:reinit(FileManager.instance.path,
-                            FileManager.instance.focused_file)
-                    end
+                    this.device:_applyWindowedViewport()
+                    this.device:_notifyScreenResize()
+                end
+            elseif ev.code == C.APP_CMD_CONTENT_RECT_CHANGED then
+                -- system bars appeared/disappeared (windowed mode on API 19+)
+                if this.device:_applyWindowedViewport() then
+                    this.device:_notifyScreenResize()
                 end
                 -- to-do: keyboard connected, disconnected
             elseif ev.code == C.APP_CMD_RESUME then
@@ -309,6 +308,18 @@ function Device:init()
     end
 
     Generic.init(self)
+
+    -- Windowed (non-fullscreen) mode on API 19+: our surface still covers the whole window,
+    -- so touch input must be shifted by the viewport offset (which can change at runtime).
+    if android.app.activity.sdkVersion >= 19 then
+        local screen = self.screen
+        self.input:registerEventAdjustHook(function(this, ev)
+            local vp = screen.viewport
+            if vp and ev.type == C.EV_ABS and (vp.x ~= 0 or vp.y ~= 0) then
+                this:adjustABS_Translate(ev, {x = -vp.x, y = -vp.y})
+            end
+        end)
+    end
 end
 
 function Device:UIManagerReady(uimgr)
@@ -399,15 +410,85 @@ end
 
 -- fullscreen
 
--- to-do: implement fullscreen toggle in API19+
 local function canToggleFullscreen()
     local api = android.app.activity.sdkVersion
-    return api < 19, api
+    return true, api
 end
 
--- toggle fullscreen API 19+
+function Device:_notifyScreenResize()
+    if not UIManager then return end
+    local new_size = self.screen:getSize()
+    logger.info("Resizing screen to", new_size)
+    local FileManager = require("apps/filemanager/filemanager")
+    UIManager:broadcastEvent(Event:new("SetDimensions", new_size))
+    UIManager:broadcastEvent(Event:new("ScreenResize", new_size))
+    UIManager:broadcastEvent(Event:new("RedrawCurrentPage"))
+    if FileManager.instance then
+        FileManager.instance:reinit(FileManager.instance.path,
+            FileManager.instance.focused_file)
+    end
+end
+
+-- Remove any viewport, going back to the full window buffer
+function Device:_dropViewport()
+    local screen = self.screen
+    if screen.full_bb then
+        screen.bb = screen.full_bb
+        screen.full_bb = nil
+    end
+    screen.viewport = nil
+end
+
+-- API 19+: when not fullscreen, restrict drawing to the window's content rect
+-- (i.e., below the status bar / above the navigation bar).
+-- Returns true if the viewport changed.
+function Device:_applyWindowedViewport()
+    if android.app.activity.sdkVersion < 19 then return false end
+    local screen = self.screen
+    local full_w, full_h = android.screen.width, android.screen.height
+
+    local want
+    if not android.isFullscreen() then
+        local r = android.app.contentRect
+        local x, y = tonumber(r.left), tonumber(r.top)
+        local w, h = tonumber(r.right) - x, tonumber(r.bottom) - y
+        if w > 0 and h > 0 and x >= 0 and y >= 0 and x + w <= full_w and y + h <= full_h
+        and not (x == 0 and y == 0 and w == full_w and h == full_h) then
+            want = {x = x, y = y, w = w, h = h}
+        end
+    end
+
+    local cur = screen.viewport
+    if (not want and not cur) or (want and cur and want.x == cur.x and want.y == cur.y
+                                  and want.w == cur.w and want.h == cur.h) then
+        return false
+    end
+
+    -- Viewports are defined in unrotated coordinates
+    local rotation = (screen.full_bb or screen.bb):getRotation()
+    self:_dropViewport()
+    screen.bb:setRotation(0)
+    screen.screen_size = {w = full_w, h = full_h}
+    if want then
+        self:setViewport(want.x, want.y, want.w, want.h)
+    end
+    screen.bb:setRotation(rotation)
+    if screen.full_bb then
+        screen.full_bb:setRotation(rotation)
+    end
+    return true
+end
+
+-- toggle fullscreen API 19+ (immersive mode vs. regular window with system bars)
 function Device:_toggleFullscreenImmersive()
-    logger.dbg("ignoring fullscreen toggle, reason: always in immersive mode")
+    local is_fullscreen = android.isFullscreen()
+    android.setFullscreen(not is_fullscreen)
+    G_reader_settings:saveSetting("disable_android_fullscreen", is_fullscreen)
+    self.fullscreen = not is_fullscreen
+    -- The viewport is updated on APP_CMD_CONTENT_RECT_CHANGED, once the system has re-laid out the window.
+    if self:_applyWindowedViewport() then
+        self:_notifyScreenResize()
+    end
 end
 
 -- toggle fullscreen API 17-18
