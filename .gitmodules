@@ -4,7 +4,7 @@
 [submodule "platform/android/luajit-launcher"]
 	path = platform/android/luajit-launcher
 	url = https://github.com/Sirence/android-luajit-launcher.git
-	branch = direct-wifi-toggle
+	branch = direct-wifi-toggle-sdk28
 [submodule "test"]
 	path = test
 	url = https://github.com/koreader/test-data.git
